@@ -15,11 +15,12 @@ const NAV_ITEMS = [
 
 export function Header() {
   const pathname = usePathname();
-  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 跟踪客户端挂载以支持主题切换
     setMounted(true);
     const onScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -73,6 +74,18 @@ export function Header() {
           })}
 
           <div className="w-px h-5 bg-zinc-200 dark:bg-zinc-700 mx-1" />
+
+          <Link
+            href="/admin"
+            className="relative px-3 py-2 text-sm rounded-lg transition-colors text-zinc-500 hover:text-zinc-900 dark:hover:text-white"
+            title="管理后台"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="sm:mr-1.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            <span className="hidden sm:inline">Admin</span>
+          </Link>
 
           <SearchDialog />
 

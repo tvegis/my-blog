@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
+import { formatDate } from "@/lib/utils";
+
+/* ====== 类型 ====== */
 
 interface Post {
   slug: string;
@@ -11,17 +15,114 @@ interface Post {
   description: string;
   tags: string[];
   draft: boolean;
+  body: string; // 用于估算阅读时间
 }
+
+/* ====== 工具函数 ====== */
+
+/** 估算中文文章阅读时间 */
+function estimateReadingTime(text: string | undefined): number {
+  if (!text) return 1;
+  return Math.max(1, Math.ceil(text.length / 500));
+}
+
+/* ====== 骨架屏 ====== */
+
+function SkeletonRow() {
+  return (
+    <div className="admin-glass rounded-xl overflow-hidden">
+      <div className="flex items-center gap-4 pl-5 pr-4 py-4">
+        <div className="flex-shrink-0 w-2 h-2 rounded-full admin-skeleton" />
+        <div className="flex-1 space-y-2.5">
+          <div className="h-5 w-1/3 admin-skeleton" />
+          <div className="h-4 w-2/3 admin-skeleton" />
+          <div className="flex items-center gap-3">
+            <div className="h-3 w-20 admin-skeleton" />
+            <div className="h-3 w-16 admin-skeleton" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ====== 确认删除内联组件 ====== */
+
+function DeleteConfirm({
+  title,
+  onConfirm,
+  onCancel,
+  deleting,
+}: {
+  title: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  deleting: boolean;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      className="overflow-hidden"
+    >
+      <div
+        className="px-5 py-3 flex items-center justify-between gap-4 text-sm"
+        style={{ borderTop: "1px solid rgba(255,80,80,0.15)" }}
+      >
+        <span style={{ color: "rgba(255,100,100,0.8)" }}>
+          确定删除「{title}」？此操作不可撤销。
+        </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onCancel}
+            disabled={deleting}
+            className="px-3 py-1.5 rounded-[7px] text-xs font-medium border transition-all duration-150 disabled:opacity-40"
+            style={{
+              borderColor: "var(--admin-border)",
+              color: "var(--admin-text)",
+              background: "transparent",
+            }}
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={deleting}
+            className="px-3 py-1.5 rounded-[7px] text-xs font-medium transition-all duration-150 disabled:opacity-40"
+            style={{
+              background: "rgba(255,50,50,0.15)",
+              border: "1px solid rgba(255,50,50,0.3)",
+              color: "#ff6b6b",
+            }}
+          >
+            {deleting ? "删除中..." : "确认删除"}
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+/* ====== 主组件 ====== */
+
+type FilterMode = "all" | "published" | "draft";
 
 export default function AdminDashboard() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
+  const [confirmSlug, setConfirmSlug] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterMode>("all");
   const router = useRouter();
 
-  const token = typeof window !== "undefined" ? sessionStorage.getItem("admin_token") : null;
+  const token =
+    typeof window !== "undefined"
+      ? sessionStorage.getItem("admin_token")
+      : null;
 
+  // 获取文章列表
   const fetchPosts = useCallback(async () => {
     if (!token) {
       router.push("/admin");
@@ -38,375 +139,440 @@ export default function AdminDashboard() {
         return;
       }
       if (!res.ok) {
-        const data = await res.json();
-        setError(data.error || "Failed to load posts");
+        const data = await res.json().catch(() => ({} as Record<string, unknown>));
+        setError((data as Record<string, unknown>)?.error as string || "加载失败");
         return;
       }
       const data = await res.json();
       setPosts(data.posts || []);
     } catch {
-      setError("Network error");
+      setError("网络错误，请检查连接");
     } finally {
       setLoading(false);
     }
   }, [token, router]);
 
   useEffect(() => {
-    fetchPosts();
+    void fetchPosts();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 组件挂载时获取数据是标准模式
   }, [fetchPosts]);
 
-  const handleDelete = async (slug: string, title: string) => {
-    if (!confirm(`确定删除「${title}」？此操作不可撤销。`)) return;
-    setDeleting(slug);
+  // 筛选后的文章列表
+  const filteredPosts = posts.filter((p) => {
+    if (filter === "published") return !p.draft;
+    if (filter === "draft") return p.draft;
+    return true;
+  });
+  const draftCount = posts.filter((p) => p.draft).length;
+  const publishedCount = posts.filter((p) => !p.draft).length;
 
+  // 登出
+  const handleLogout = () => {
+    sessionStorage.removeItem("admin_token");
+    router.push("/admin");
+  };
+
+  // 删除文章
+  const handleDelete = async (slug: string) => {
+    setDeletingSlug(slug);
     try {
       const res = await fetch(`/api/admin/posts/${slug}`, {
         method: "DELETE",
         headers: { "x-admin-auth": token! },
       });
-      if (!res.ok) throw new Error("Delete failed");
+      if (!res.ok) throw new Error("删除失败");
       setPosts((prev) => prev.filter((p) => p.slug !== slug));
+      setConfirmSlug(null);
     } catch {
       alert("删除失败，请重试");
     } finally {
-      setDeleting(null);
+      setDeletingSlug(null);
     }
   };
 
-  const formatDate = (d: string) => {
-    if (!d) return "—";
-    return new Date(d).toLocaleDateString("zh-CN", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-    });
-  };
-
+  // 加载状态
   if (loading) {
     return (
-      <div className="dashboard">
-        <div className="loading-state">
-          <span className="spinner-lg" />
-          <p>加载中...</p>
+      <div
+        className="min-h-screen transition-colors duration-200"
+        style={{
+          background: "var(--admin-bg)",
+          fontFamily: "var(--font-geist-sans), -apple-system, sans-serif",
+        }}
+      >
+        {/* 头部骨架 */}
+        <header
+          className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b"
+          style={{
+            background: "var(--admin-header-bg)",
+            backdropFilter: "blur(16px)",
+            WebkitBackdropFilter: "blur(16px)",
+            borderColor: "var(--admin-border)",
+          }}
+        >
+          <div className="flex items-baseline gap-3">
+            <div className="h-6 w-24 admin-skeleton" />
+            <div className="h-4 w-16 admin-skeleton" />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-28 admin-skeleton rounded-[10px]" />
+            <div className="h-9 w-9 admin-skeleton rounded-[10px]" />
+          </div>
+        </header>
+
+        {/* 列表骨架 */}
+        <div className="max-w-3xl mx-auto px-6 py-8 space-y-3">
+          <SkeletonRow />
+          <SkeletonRow />
+          <SkeletonRow />
+          <SkeletonRow />
         </div>
-        <style jsx>{`
-          .dashboard {
-            min-height: 100vh;
-            background: var(--admin-bg);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: var(--font-geist-mono), monospace;
-          }
-          .loading-state {
-            text-align: center;
-            color: rgba(255,255,255,0.4);
-          }
-          .loading-state p { margin-top: 1rem; }
-          .spinner-lg {
-            display: inline-block;
-            width: 24px; height: 24px;
-            border: 2px solid rgba(255,255,255,0.1);
-            border-top-color: rgba(120,80,255,0.8);
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-          }
-          @keyframes spin { to { transform: rotate(360deg); } }
-        `}</style>
       </div>
     );
   }
 
   return (
-    <div className="dashboard">
-      <header className="dash-header">
-        <div className="header-left">
-          <h1 className="dash-title">文章管理</h1>
-          <span className="post-count">{posts.length} 篇文章</span>
+    <div
+      className="min-h-screen transition-colors duration-200"
+      style={{
+        background: "var(--admin-bg)",
+        fontFamily: "var(--font-geist-sans), -apple-system, sans-serif",
+      }}
+    >
+      {/* ===== 头部 ===== */}
+      <header
+        className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b transition-colors duration-200"
+        style={{
+          background: "var(--admin-header-bg)",
+          backdropFilter: "blur(16px)",
+          WebkitBackdropFilter: "blur(16px)",
+          borderColor: "var(--admin-border)",
+        }}
+      >
+        <div className="flex items-baseline gap-3">
+          <h1
+            className="text-xl font-semibold tracking-tight"
+            style={{ color: "var(--admin-primary)" }}
+          >
+            文章管理
+          </h1>
+          <span
+            className="text-sm font-mono"
+            style={{
+              color: "var(--admin-muted)",
+              fontFamily: "var(--font-geist-mono), monospace",
+            }}
+          >
+            {posts.length} 篇
+          </span>
         </div>
-        <div className="header-right">
-          <Link href="/admin/editor" className="btn-primary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+
+        <div className="flex items-center gap-2">
+          {/* 新建文章 */}
+          <Link href="/admin/editor" className="admin-btn-primary text-sm">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
             新建文章
           </Link>
-          <Link href="/" className="btn-ghost" title="返回博客">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+
+          {/* 返回博客 */}
+          <Link href="/" className="admin-btn-ghost" title="返回博客">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
           </Link>
+
+          {/* 登出 */}
+          <button onClick={handleLogout} className="admin-btn-ghost" title="登出">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
         </div>
       </header>
 
-      <main className="dash-main">
-        {error && <div className="dash-error">{error}</div>}
+      {/* ===== 主内容区 ===== */}
+      <main className="max-w-3xl mx-auto px-6 py-8">
+        {/* 错误提示 */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mb-4 px-4 py-3 rounded-[10px] text-sm"
+              style={{
+                background: "rgba(255,50,50,0.08)",
+                border: "1px solid rgba(255,50,50,0.15)",
+                color: "#ff6b6b",
+              }}
+            >
+              {error}
+              <button
+                onClick={() => { setError(""); fetchPosts(); }}
+                className="ml-3 underline underline-offset-2 hover:opacity-80"
+              >
+                重试
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {posts.length === 0 ? (
-          <div className="empty-state">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" style={{color:'rgba(255,255,255,0.15)'}}>
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
-            </svg>
-            <p>还没有文章</p>
-            <Link href="/admin/editor" className="btn-primary">写第一篇文章</Link>
-          </div>
-        ) : (
-          <div className="post-grid">
-            {posts.map((post) => (
-              <div key={post.slug} className="post-card">
-                <div className="card-header">
-                  <span className={`status-badge ${post.draft ? "draft" : "published"}`}>
-                    {post.draft ? "草稿" : "已发布"}
-                  </span>
-                  <span className="post-date">{formatDate(post.date)}</span>
-                </div>
-                <Link href={`/admin/editor/${post.slug}`} className="card-body">
-                  <h2 className="card-title">{post.title}</h2>
-                  {post.description && (
-                    <p className="card-desc">{post.description}</p>
-                  )}
-                </Link>
-                {post.tags && post.tags.length > 0 && (
-                  <div className="card-tags">
-                    {post.tags.map((tag) => (
-                      <span key={tag} className="tag">{tag}</span>
-                    ))}
-                  </div>
-                )}
-                <div className="card-actions">
-                  <Link
-                    href={`/admin/editor/${post.slug}`}
-                    className="action-btn"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                    </svg>
-                    编辑
-                  </Link>
-                  <button
-                    onClick={() => handleDelete(post.slug, post.title)}
-                    disabled={deleting === post.slug}
-                    className="action-btn"
-                  >
-                    {deleting === post.slug ? "删除中..." : "删除"}
-                  </button>
-                </div>
-              </div>
+        {/* ===== 筛选标签 ===== */}
+        {posts.length > 0 && !loading && (
+          <div className="flex items-center gap-1 mb-6">
+            {([
+              { key: "all" as const, label: "全部", count: posts.length },
+              { key: "published" as const, label: "已发布", count: publishedCount },
+              { key: "draft" as const, label: "草稿箱", count: draftCount },
+            ]).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setFilter(tab.key)}
+                className="px-3 py-1.5 text-xs rounded-[7px] font-medium border transition-all duration-150"
+                style={{
+                  background: filter === tab.key ? "var(--admin-card-hover-bg)" : "transparent",
+                  borderColor: filter === tab.key ? "var(--admin-border-hover)" : "transparent",
+                  color: filter === tab.key ? "var(--admin-primary)" : "var(--admin-muted)",
+                }}
+              >
+                {tab.label}
+                <span className="ml-1 opacity-50">{tab.count}</span>
+              </button>
             ))}
           </div>
         )}
-      </main>
 
-      <style jsx>{`
-        .dashboard {
-          min-height: 100vh;
-          background: var(--admin-bg);
-          font-family: var(--font-geist-sans), -apple-system, sans-serif;
-          transition: background 0.2s ease;
-        }
-        .dash-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 1.5rem 2rem;
-          border-bottom: 1px solid var(--admin-border);
-          background: var(--admin-header-bg);
-          backdrop-filter: blur(12px);
-          position: sticky;
-          top: 0;
-          z-index: 10;
-          transition: background 0.2s ease, border-color 0.2s ease;
-        }
-        .header-left {
-          display: flex;
-          align-items: baseline;
-          gap: 1rem;
-        }
-        .dash-title {
-          color: var(--admin-primary);
-          font-size: 1.3rem;
-          font-weight: 600;
-          letter-spacing: -0.02em;
-        }
-        .post-count {
-          color: var(--admin-muted);
-          font-size: 0.85rem;
-          font-family: var(--font-geist-mono), monospace;
-        }
-        .header-right {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-        }
-        .btn-primary {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.6rem 1.2rem;
-          background: linear-gradient(135deg, #7850ff, #5050ff);
-          color: #fff;
-          border: none;
-          border-radius: 10px;
-          font-size: 0.9rem;
-          font-weight: 500;
-          cursor: pointer;
-          text-decoration: none;
-          transition: all 0.2s;
-        }
-        .btn-primary:hover {
-          opacity: 0.9;
-          transform: translateY(-1px);
-        }
-        .btn-ghost {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 36px;
-          height: 36px;
-          border-radius: 10px;
-          border: 1px solid var(--admin-border);
-          background: transparent;
-          color: var(--admin-muted);
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-        .btn-ghost:hover {
-          background: var(--admin-card-hover-bg);
-          color: var(--admin-primary);
-        }
-        .dash-main {
-          max-width: 1000px;
-          margin: 0 auto;
-          padding: 2rem;
-        }
-        .dash-error {
-          padding: 0.8rem 1rem;
-          background: rgba(255,50,50,0.08);
-          border: 1px solid rgba(255,50,50,0.15);
-          border-radius: 10px;
-          color: #ff6b6b;
-          margin-bottom: 1.5rem;
-          font-size: 0.9rem;
-        }
-        .empty-state {
-          text-align: center;
-          padding: 4rem 2rem;
-          color: var(--admin-muted);
-        }
-        .empty-state p {
-          margin: 1.5rem 0;
-          font-size: 1rem;
-        }
-        .post-grid {
-          display: grid;
-          gap: 1rem;
-        }
-        .post-card {
-          background: var(--admin-card-bg);
-          border: 1px solid var(--admin-border);
-          border-radius: 14px;
-          overflow: hidden;
-          transition: all 0.2s;
-        }
-        .post-card:hover {
-          border-color: var(--admin-border-hover);
-          background: var(--admin-card-hover-bg);
-        }
-        .card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 0.8rem 1.2rem 0;
-        }
-        .status-badge {
-          font-size: 0.75rem;
-          padding: 0.2rem 0.6rem;
-          border-radius: 6px;
-          font-family: var(--font-geist-mono), monospace;
-          letter-spacing: 0.02em;
-        }
-        .status-badge.published {
-          background: rgba(50, 200, 100, 0.1);
-          color: #50d080;
-          border: 1px solid rgba(50, 200, 100, 0.2);
-        }
-        .status-badge.draft {
-          background: rgba(255, 180, 50, 0.1);
-          color: #e8b840;
-          border: 1px solid rgba(255, 180, 50, 0.2);
-        }
-        .post-date {
-          color: var(--admin-muted);
-          font-size: 0.8rem;
-          font-family: var(--font-geist-mono), monospace;
-        }
-        .card-body {
-          display: block;
-          padding: 0.8rem 1.2rem 1rem;
-          text-decoration: none;
-          cursor: pointer;
-        }
-        .card-title {
-          color: var(--admin-primary);
-          font-size: 1.05rem;
-          font-weight: 600;
-          margin-bottom: 0.3rem;
-          letter-spacing: -0.01em;
-        }
-        .card-desc {
-          color: var(--admin-secondary);
-          font-size: 0.85rem;
-          line-height: 1.5;
-          display: -webkit-box;
-          -webkit-line-clamp: 2;
-          -webkit-box-orient: vertical;
-          overflow: hidden;
-        }
-        .card-tags {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 0.4rem;
-          margin-top: 0.6rem;
-        }
-        .tag {
-          font-size: 0.75rem;
-          padding: 0.15rem 0.5rem;
-          border-radius: 5px;
-          background: rgba(120, 80, 255, 0.1);
-          color: rgba(180, 150, 255, 0.8);
-          border: 1px solid rgba(120, 80, 255, 0.15);
-          font-family: var(--font-geist-mono), monospace;
-        }
-        .card-actions {
-          display: flex;
-          gap: 0.5rem;
-          padding: 0 1.2rem 0.8rem;
-        }
-        .action-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.35rem;
-          padding: 0.4rem 0.8rem;
-          border-radius: 7px;
-          font-size: 0.8rem;
-          color: var(--admin-text);
-          text-decoration: none;
-          border: 1px solid transparent;
-          background: transparent;
-          cursor: pointer;
-          transition: all 0.15s;
-          font-family: inherit;
-        }
-        .action-btn:hover {
-          background: var(--admin-card-hover-bg);
-          color: var(--admin-primary);
-          border-color: var(--admin-border);
-        }
-        .action-btn:disabled {
-          opacity: 0.4;
-          cursor: not-allowed;
-        }
-      `}</style>
+        {/* 空状态 */}
+        {filteredPosts.length === 0 && !loading ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center py-20"
+          >
+            <svg
+              width="48" height="48" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="1" strokeLinecap="round"
+              className="mx-auto mb-4"
+              style={{ color: "rgba(255,255,255,0.1)" }}
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+            </svg>
+            <p className="mb-6" style={{ color: "var(--admin-muted)" }}>
+              {filter === "draft"
+                ? "草稿箱是空的"
+                : filter === "published"
+                  ? "还没有已发布的文章"
+                  : "还没有文章，开始写第一篇吧"}
+            </p>
+            <Link href="/admin/editor" className="admin-btn-primary text-sm">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              {posts.length === 0 ? "写第一篇文章" : "写新文章"}
+            </Link>
+          </motion.div>
+        ) : (
+          /* 文章列表 */
+          <AnimatePresence mode="popLayout">
+            <div className="space-y-3">
+              {filteredPosts.map((post, index) => (
+                <motion.div
+                  key={post.slug}
+                  layout
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, x: -20, height: 0, marginBottom: 0 }}
+                  transition={{
+                    type: "spring",
+                    stiffness: 300,
+                    damping: 30,
+                    delay: index * 0.03,
+                  }}
+                >
+                  {/* 文章卡片 */}
+                  <div
+                    className="group relative rounded-xl overflow-hidden transition-all duration-200"
+                    style={{
+                      background: "var(--admin-card-bg)",
+                      border: `1px solid ${confirmSlug === post.slug ? "rgba(255,80,80,0.15)" : "var(--admin-border)"}`,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = "var(--admin-border-hover)";
+                      e.currentTarget.style.background = "var(--admin-card-hover-bg)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = confirmSlug === post.slug ? "rgba(255,80,80,0.15)" : "var(--admin-border)";
+                      e.currentTarget.style.background = "var(--admin-card-bg)";
+                    }}
+                  >
+                    {/* 左侧状态色条 */}
+                    <div
+                      className="absolute left-0 top-0 bottom-0 w-[3px]"
+                      style={{
+                        background: post.draft ? "#e8b840" : "#50d080",
+                      }}
+                    />
+
+                    <div className="pl-5 pr-4 py-4 flex items-center gap-4">
+                      {/* 状态指示点 */}
+                      <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
+                        <span
+                          className={`w-2 h-2 rounded-full ${post.draft ? "admin-dot-draft" : "admin-dot-success"}`}
+                        />
+                        <span
+                          className="text-[10px] uppercase tracking-wider font-mono"
+                          style={{
+                            color: post.draft ? "#e8b840" : "#50d080",
+                            fontFamily: "var(--font-geist-mono), monospace",
+                          }}
+                        >
+                          {post.draft ? "草稿" : "已发布"}
+                        </span>
+                      </div>
+
+                      {/* 内容区 */}
+                      <div className="flex-1 min-w-0">
+                        {/* 标题 */}
+                        <h2
+                          className="text-base font-semibold truncate tracking-tight"
+                          style={{ color: "var(--admin-primary)" }}
+                        >
+                          {post.title}
+                        </h2>
+
+                        {/* 描述 */}
+                        {post.description && (
+                          <p
+                            className="text-sm mt-0.5 truncate"
+                            style={{ color: "var(--admin-secondary)" }}
+                          >
+                            {post.description}
+                          </p>
+                        )}
+
+                        {/* 元数据行 */}
+                        <div className="flex items-center gap-3 mt-2 flex-wrap">
+                          <span
+                            className="text-xs font-mono"
+                            style={{
+                              color: "var(--admin-muted)",
+                              fontFamily: "var(--font-geist-mono), monospace",
+                            }}
+                          >
+                            {formatDate(post.date)}
+                          </span>
+                          <span
+                            className="text-xs font-mono"
+                            style={{
+                              color: "var(--admin-muted)",
+                              fontFamily: "var(--font-geist-mono), monospace",
+                            }}
+                          >
+                            {estimateReadingTime(post.body)} 分钟阅读
+                          </span>
+                          {post.tags?.length > 0 &&
+                            post.tags.slice(0, 3).map((tag) => (
+                              <span
+                                key={tag}
+                                className="text-[11px] px-1.5 py-0.5 rounded-[5px] font-mono"
+                                style={{
+                                  background: "rgba(120,80,255,0.1)",
+                                  color: "rgba(180,150,255,0.8)",
+                                  border: "1px solid rgba(120,80,255,0.15)",
+                                  fontFamily: "var(--font-geist-mono), monospace",
+                                }}
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          {post.tags?.length > 3 && (
+                            <span
+                              className="text-[11px]"
+                              style={{ color: "var(--admin-muted)" }}
+                            >
+                              +{post.tags.length - 3}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 悬停编辑按钮 */}
+                      <Link
+                        href={`/admin/editor/${post.slug}`}
+                        className="flex-shrink-0 opacity-0 translate-x-2 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 rounded-lg p-2 border"
+                        style={{
+                          background: "var(--admin-card-bg)",
+                          borderColor: "var(--admin-border)",
+                          color: "var(--admin-text)",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.color = "var(--admin-primary)";
+                          e.currentTarget.style.borderColor = "var(--admin-border-hover)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.color = "var(--admin-text)";
+                          e.currentTarget.style.borderColor = "var(--admin-border)";
+                        }}
+                        title="编辑文章"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                      </Link>
+                    </div>
+
+                    {/* 删除操作区 */}
+                    {confirmSlug !== post.slug && (
+                      <div className="px-5 pb-3">
+                        <button
+                          onClick={() => setConfirmSlug(post.slug)}
+                          className="text-xs font-medium transition-colors duration-150"
+                          style={{ color: "var(--admin-muted)" }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.color = "#ff6b6b";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.color = "var(--admin-muted)";
+                          }}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 确认删除内联面板 */}
+                    <AnimatePresence>
+                      {confirmSlug === post.slug && (
+                        <DeleteConfirm
+                          title={post.title}
+                          deleting={deletingSlug === post.slug}
+                          onConfirm={() => handleDelete(post.slug)}
+                          onCancel={() => setConfirmSlug(null)}
+                        />
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </AnimatePresence>
+        )}
+
+        {/* 底部留白 */}
+        <div className="h-16" />
+      </main>
     </div>
   );
 }

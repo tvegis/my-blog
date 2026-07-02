@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseFrontmatter } from "@/lib/frontmatter";
 
 const GITHUB_TOKEN = process.env.GITHUB_ACCESS_TOKEN;
 const OWNER = "tvegis";
@@ -16,33 +17,6 @@ function getHeaders() {
     Authorization: `Bearer ${GITHUB_TOKEN}`,
     Accept: "application/vnd.github.v3+json",
     "User-Agent": "my-blog-admin",
-  };
-}
-
-function parseFrontmatter(raw: string) {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) return { title: "Untitled", date: "", description: "", tags: [], draft: false, body: raw };
-
-  const fm: Record<string, any> = {};
-  for (const line of match[1].split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let val: any = line.slice(colonIdx + 1).trim();
-    if (val.startsWith("[") && val.endsWith("]")) {
-      try { val = JSON.parse(val.replace(/'/g, '"')); } catch { val = []; }
-    } else if (val === "true") val = true;
-    else if (val === "false") val = false;
-    fm[key] = val;
-  }
-
-  return {
-    title: fm.title || "Untitled",
-    date: fm.date || "",
-    description: fm.description || "",
-    tags: fm.tags || [],
-    draft: fm.draft ?? false,
-    body: match[2].trim(),
   };
 }
 
